@@ -10,11 +10,18 @@ local BAR_POOL_KEY      = addonName .. "_Bars"
 local DEFAULT_BAR_TEX   = "Interface\\TargetingFrame\\UI-StatusBar"
 local AUTO_SHOT_NAME
 
-local NEXT_HIT_ABILITIES = {
-    [47450] = true,
-    [845]   = true,   -- Cleave (Rank 1)
-    [2973]  = true,   -- Raptor Strike (Rank 1)
+-- Per-class base spell IDs for "on next hit" abilities (rank-1 used only for name lookup)
+local CLASS_NEXT_HIT_SPELLS = {
+    ["WARRIOR"]     = { 78, 845 },    -- Heroic Strike, Cleave
+    ["HUNTER"]      = { 2973 },       -- Raptor Strike
+    ["DRUID"]       = { 6807 },       -- Maul
+    ["DEATHKNIGHT"] = { 56815 },      -- Rune Strike
 }
+
+-- Populated in OnInitialize with the localized spell names for the current class.
+-- Name-based matching makes detection rank-independent.
+local NEXT_HIT_SPELL_NAMES = {}
+local queuedNextHitSpell   = nil  -- spell name currently queued via IsCurrentSpell
 
 local activeBars              = { MH = nil, OH = nil, RANGED = nil }
 local lastMHTime, lastMHSpeed = 0, 0
@@ -157,8 +164,7 @@ function Swingbar:GetOptions()
                             return c.r, c.g, c.b
                         end,
                         set   = function(_, r, g, b)
-                            local c = self.db.profile.mhColor
-                            c.r, c.g, c.b = r, g, b
+                            self.db.profile.mhColor = { r = r, g = g, b = b }
                             if activeBars.MH then activeBars.MH:SetStatusBarColor(r, g, b) end
                         end,
                     },
@@ -171,8 +177,7 @@ function Swingbar:GetOptions()
                             return c.r, c.g, c.b
                         end,
                         set   = function(_, r, g, b)
-                            local c = self.db.profile.ohColor
-                            c.r, c.g, c.b = r, g, b
+                            self.db.profile.ohColor = { r = r, g = g, b = b }
                             if activeBars.OH then activeBars.OH:SetStatusBarColor(r, g, b) end
                         end,
                     },
@@ -185,8 +190,7 @@ function Swingbar:GetOptions()
                             return c.r, c.g, c.b
                         end,
                         set   = function(_, r, g, b)
-                            local c = self.db.profile.rangedColor
-                            c.r, c.g, c.b = r, g, b
+                            self.db.profile.rangedColor = { r = r, g = g, b = b }
                             if activeBars.RANGED then activeBars.RANGED:SetStatusBarColor(r, g, b) end
                         end,
                     },
@@ -205,6 +209,13 @@ function Swingbar:OnInitialize()
     self.db = LibStub("AceDB-3.0"):New("SwingbarDB", defaults, true)
     AUTO_SHOT_NAME = GetSpellInfo(75)
     _, playerClass = UnitClass("player")
+
+    -- Build the name-based lookup for "on next hit" abilities for this class.
+    -- Using spell names (via GetSpellInfo) makes the match rank-independent.
+    for _, id in ipairs(CLASS_NEXT_HIT_SPELLS[playerClass] or {}) do
+        local name = GetSpellInfo(id)
+        if name then NEXT_HIT_SPELL_NAMES[name] = true end
+    end
 
     -- Frame pool: factory creates a StatusBar with a centred overlay label.
     -- The resetter clears animation state so re-acquired bars start fresh.
@@ -279,6 +290,9 @@ function Swingbar:OnEnable()
     self:RegisterEvent("UNIT_SPELLCAST_STOP",        "OnSpellCastStop")
     self:RegisterEvent("UNIT_SPELLCAST_FAILED",      "OnSpellCastStop")
     self:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED", "OnSpellCastStop")
+    if next(NEXT_HIT_SPELL_NAMES) then
+        self:RegisterEvent("CURRENT_SPELL_CAST_CHANGED")
+    end
 
     self:RefreshLayout()
 end
@@ -290,6 +304,7 @@ function Swingbar:OnDisable()
     end
     LibFP:ReleaseAll(BAR_POOL_KEY)
     wipe(activeBars)
+    queuedNextHitSpell = nil
 end
 
 function Swingbar:RefreshLayout()
@@ -421,8 +436,21 @@ function Swingbar:OnSpellCastStop(event, unit, spellName)
     end
 end
 
+-- Track which "on next hit" ability (if any) is currently queued.
+-- Fires whenever the player's pending spell changes (CURRENT_SPELL_CAST_CHANGED).
+function Swingbar:CURRENT_SPELL_CAST_CHANGED()
+    local newQueued
+    for spellName in pairs(NEXT_HIT_SPELL_NAMES) do
+        if IsCurrentSpell(spellName) then
+            newQueued = spellName
+            break
+        end
+    end
+    queuedNextHitSpell = newQueued
+end
+
 function Swingbar:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
-    local _, subEvent, sourceGUID, _, _, _, _, _, spellId = ...
+    local _, subEvent, sourceGUID, _, _, _, _, _, _, spellName = ...
     if sourceGUID ~= UnitGUID("player") then return end
 
     local now = GetTime()
@@ -443,8 +471,10 @@ function Swingbar:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
         end
 
     elseif subEvent == "SPELL_DAMAGE" or subEvent == "SPELL_MISSED" then
-        -- Reset swing timer on specific "Next Hit" abilities (Cleave, Raptor Strike, etc)
-        if NEXT_HIT_ABILITIES[spellId] then
+        -- Reset swing timer on "on next hit" abilities (Heroic Strike, Cleave,
+        -- Raptor Strike, Maul, Rune Strike, etc.).  Name-based matching works
+        -- for every rank without maintaining a large ID list.
+        if NEXT_HIT_SPELL_NAMES[spellName] then
             self:StartSwing("MH", mhSpeed)
             lastMHTime, lastMHSpeed = now, mhSpeed
         end
