@@ -34,7 +34,10 @@ local defaults = {
         width       = 200,
         barHeight   = 12,
         barSpacing  = 2,
-        barTexture  = "Blizzard",
+        barTexture       = "Blizzard",
+        barBorder        = "None",
+        barBorderSize    = 8,
+        barBorderColor   = { r = 1, g = 1, b = 1, a = 1 },
         x           = 0,
         y           = -100,
         mhColor     = { r = 0.4, g = 0.6, b = 1.0 },
@@ -81,6 +84,16 @@ end
 -- ============================================================
 -- AceConfig options table
 -- ============================================================
+
+-- Build a { name = name } table from an LSM media type so that AceConfig's
+-- select widget displays the human-readable name instead of the file path.
+local function LSMNames(mediatype)
+    local t = {}
+    for name in pairs(LSM:HashTable(mediatype)) do
+        t[name] = name
+    end
+    return t
+end
 
 function Swingbar:GetOptions()
     return {
@@ -140,10 +153,46 @@ function Swingbar:GetOptions()
                         order  = 3,
                         type   = "select",
                         name   = "Texture",
-                        values = LSM:HashTable("statusbar"),
+                        values = function() return LSMNames("statusbar") end,
                         get    = function() return self.db.profile.barTexture end,
                         set    = function(_, val)
                             self.db.profile.barTexture = val
+                            self:RefreshLayout()
+                        end,
+                    },
+                    barBorder = {
+                        order  = 4,
+                        type   = "select",
+                        name   = "Border",
+                        values = function() return LSMNames("border") end,
+                        get    = function() return self.db.profile.barBorder end,
+                        set    = function(_, val)
+                            self.db.profile.barBorder = val
+                            self:RefreshLayout()
+                        end,
+                    },
+                    barBorderSize = {
+                        order = 5,
+                        type  = "range",
+                        name  = "Border Size",
+                        min   = 1, max = 32, step = 1,
+                        get   = function() return self.db.profile.barBorderSize end,
+                        set   = function(_, val)
+                            self.db.profile.barBorderSize = val
+                            self:RefreshLayout()
+                        end,
+                    },
+                    barBorderColor = {
+                        order    = 6,
+                        type     = "color",
+                        name     = "Border Color",
+                        hasAlpha = true,
+                        get      = function()
+                            local c = self.db.profile.barBorderColor
+                            return c.r, c.g, c.b, c.a
+                        end,
+                        set      = function(_, r, g, b, a)
+                            self.db.profile.barBorderColor = { r = r, g = g, b = b, a = a }
                             self:RefreshLayout()
                         end,
                     },
@@ -233,7 +282,8 @@ function Swingbar:OnInitialize()
             bar.duration    = nil
             bar.lastTick    = nil
             bar:SetValue(0)
-            if bar.text then bar.text:SetText("") end
+            if bar.text   then bar.text:SetText("") end
+            if bar.border then bar.border:Hide()    end
         end,
     })
 
@@ -318,7 +368,10 @@ function Swingbar:RefreshLayout()
     self.frame:ClearBars()
     self.frame:SetWidth(db.width)
 
-    local texPath = LSM:Fetch("statusbar", db.barTexture) or DEFAULT_BAR_TEX
+    local texPath    = LSM:Fetch("statusbar", db.barTexture) or DEFAULT_BAR_TEX
+    local borderPath = LSM:Fetch("border", db.barBorder or "None")
+    local borderSize = db.barBorderSize or 8
+    local bc         = db.barBorderColor or { r = 1, g = 1, b = 1, a = 1 }
 
     local function SetupBar(id, label, color)
         local bar = LibFP:Acquire(BAR_POOL_KEY, self.frame)
@@ -326,6 +379,30 @@ function Swingbar:RefreshLayout()
         bar:SetStatusBarColor(color.r, color.g, color.b)
         bar:SetSize(db.width, db.barHeight)
         bar.text:SetText(label)
+
+        -- Create or reuse a border overlay frame
+        if not bar.border then
+            bar.border = CreateFrame("Frame", nil, bar)
+            bar.border:SetAllPoints(bar)
+            bar.border:SetFrameLevel(bar:GetFrameLevel() + 2)
+        end
+
+        if borderPath ~= nil and borderPath ~= "" then
+            -- Inset is half the edge size so the border straddles the bar edge evenly.
+            local inset = borderSize / 2
+            bar.border:SetBackdrop({
+                edgeFile = borderPath,
+                tile     = false, tileSize = 0,
+                edgeSize = borderSize,
+                insets   = { left = inset, right = inset, top = inset, bottom = inset },
+            })
+            bar.border:SetBackdropBorderColor(bc.r, bc.g, bc.b, bc.a or 1)
+            bar.border:Show()
+        else
+            bar.border:SetBackdrop(nil)
+            bar.border:Hide()
+        end
+
         self.frame:AddBar(bar)
         activeBars[id] = bar
     end
